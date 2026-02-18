@@ -1,0 +1,66 @@
+
+# ─────────────────────────────────────────────────────────────────
+#  Simulated multi-cloud network topology
+#
+#  net-aws  10.10.0.0/24  →  gateway  →  net-gcp  10.20.0.0/24
+#
+#  Cross-cloud traffic hops through the gateway container.
+#  tc-netem on the gateway adds configurable WAN latency so
+#  AWS↔GCP RTT ≈ CROSS_CLOUD_LATENCY_MS (default 50ms).
+#  Intra-cloud traffic stays on a single bridge: <1ms.
+# ─────────────────────────────────────────────────────────────────
+
+networks:
+  net-aws:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.0.0/24
+          gateway: 10.10.0.1
+
+  net-gcp:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.20.0.0/24
+          gateway: 10.20.0.1
+
+  net-azure:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.30.0.0/24
+          gateway: 10.30.0.1
+
+services:
+
+  # ── Gateway ────────────────────────────────────────────────────
+  # Sits on both networks and routes cross-cloud traffic.
+  # Runs tc-netem to simulate WAN latency on the GCP-facing interface.
+  gateway:
+    build:
+      context: ../docker/gateway
+      dockerfile: Dockerfile
+    container_name: gateway
+    hostname: gateway
+    # NET_ADMIN required for tc and ip route commands
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv4.ip_forward=1
+    networks:
+      net-aws:
+        ipv4_address: 10.10.0.254   # "top" of AWS subnet — easy to remember
+      net-gcp:
+        ipv4_address: 10.20.0.254   # "top" of GCP subnet
+      net-azure:
+        ipv4_address: 10.30.0.254
+    environment:
+      - CROSS_CLOUD_LATENCY_MS=${CROSS_CLOUD_LATENCY_MS:-50}
+      - CROSS_CLOUD_JITTER_MS=${CROSS_CLOUD_JITTER_MS:-5}
+    healthcheck:
+      test: ["CMD", "ping", "-c1", "-W1", "10.10.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
