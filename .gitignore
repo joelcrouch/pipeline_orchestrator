@@ -1,0 +1,117 @@
+# ─────────────────────────────────────────────
+#  Data Pipeline Orchestrator — .gitignore
+# ─────────────────────────────────────────────
+
+# ── Go (control plane) ───────────────────────
+/control-plane/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/vendor/
+
+# ── Python / Conda (workers) ─────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+wheels/
+.installed.cfg
+MANIFEST
+
+# Conda environments — never commit these
+/worker/envs/
+envs/
+.conda/
+conda-meta/
+
+# Virtual envs (if someone uses venv by mistake)
+.venv/
+venv/
+ENV/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Secrets & Config ─────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets/
+credentials/
+
+# ── Docker ───────────────────────────────────
+# Keep compose files, ignore runtime artifacts
+docker/volumes/
+.docker/
+
+# ── Data & ML Artifacts ──────────────────────
+# Don't commit training data, checkpoints, or model weights
+data/raw/
+data/processed/
+data/interim/
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+*.h5
+*.pkl
+*.pickle
+*.npy
+*.npz
+*.safetensors
+
+# Matrix test data (generated, not sourced)
+data/matrices/
+
+# MinIO local volume (docker compose volume)
+minio-data/
+
+# ── Logs & Metrics ───────────────────────────
+logs/
+*.log
+*.log.*
+pprof/
+*.prof
+prometheus-data/
+grafana-data/
+
+# ── Proto generated files ────────────────────
+# Commit .proto source, ignore generated stubs
+proto/gen/
+
+# ── IDE & OS ─────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Test & Coverage ──────────────────────────
+coverage.out
+coverage.html
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
