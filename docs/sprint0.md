@@ -13,10 +13,10 @@
 
 **As a** developer, **I want to** spin up isolated Docker networks that simulate AWS and GCP VPCs with realistic cross-cloud latency, **so that** I can develop and test distributed behavior locally without spending cloud credits.
 
-### Acceptance Criteria
-- [ ] `docker-compose up` creates two named bridge networks: `net-aws` and `net-gcp`
+### Acceptance Criteria  **DONE**
+- [ ] `docker-compose up` creates three named bridge networks: `net-aws` and `net-gcp` and `net-azure`
 - [ ] A `tc-netem` sidecar or iptables rule imposes configurable latency (default 50ms RTT) on cross-network traffic
-- [ ] Containers on `net-aws` cannot reach containers on `net-gcp` except through the gateway node
+- [ ] Containers on `net-aws` cannot reach containers on `net-gcp` except through the gateway node  and `net-azure`
 - [ ] Running `ping` from an AWS node to a GCP node shows ~50ms RTT; same-network ping is <1ms
 - [ ] A single `make sim-up` command starts the full environment; `make sim-down` tears it down cleanly
 

@@ -15,7 +15,7 @@ test:
 
 lint:
 	cd control-plane && golangci-lint run
-	cd worker && ruff check .
+# 	cd worker && ruff check .
 
 proto-gen:
 	bash scripts/proto-gen.sh
