@@ -1,6 +1,6 @@
 # Data Pipeline Orchestrator — Sprint 0
 ## Environment & Scaffolding
-**Stack:** Go 1.22+ · Python 3.11+ · Docker Compose · gRPC + protobuf · MinIO · Prometheus
+**Stack:** Go 1.25+ · Python 3.11+ · Docker Compose · gRPC + protobuf · MinIO · Prometheus
 
 **Goal:** Get every developer to a state where they can run a 6-node simulated multi-cloud cluster locally, with Go and Python services building and passing tests. No Raft logic yet — just solid infrastructure.
 
@@ -28,7 +28,7 @@
 
 ---
 
-## S0.2 — Go Control Plane Skeleton & Build Pipeline
+## S0.2 — Go Control Plane Skeleton & Build Pipeline  **DONE**
 *3 points · Tags: Go, Infra*
 
 **As a** developer, **I want to** scaffold the Go module for the control plane with a working build, lint, and test pipeline, **so that** every contributor can run `go build`, `go test ./...` and get a green baseline from day one.
@@ -48,7 +48,7 @@
 
 ---
 
-## S0.3 — Python Worker Skeleton & Packaging
+## S0.3 — Python Worker Skeleton & Packaging  **DONE**
 *3 points · Tags: Python, Infra*
 
 **As a** developer, **I want to** scaffold the Python worker service with a working Dockerfile, dependency management, and test harness, **so that** the data-plane worker can be iterated on independently and deployed as a container image.
@@ -68,25 +68,26 @@
 
 ---
 
-## S0.4 — 6-Node Cluster Compose File with Health Checks
-*5 points · Tags: Docker, Infra*
+## S0.4 — 9-Container Cluster Compose File with Health Checks
+*6 points · Tags: Docker, Infra*
 
-**As a** developer, **I want to** define a `docker-compose.yml` that launches 3 Go control-plane nodes and 3 Python worker nodes across the two simulated cloud networks, **so that** I have a reproducible cluster to run Raft and MapReduce experiments against without touching real cloud infrastructure.
+**As a** developer, **I want to** define a `docker-compose.yml` that launches 3 Go control-plane nodes (one per cloud) and 4 Python worker nodes across three simulated cloud networks, **so that** I have a reproducible multi-cloud cluster to run Raft and MapReduce experiments against without touching real cloud infrastructure.
 
 ### Acceptance Criteria
-- [ ] `docker compose up` starts exactly 6 named containers: `cp-aws-1`, `cp-gcp-1`, `cp-gcp-2` (control plane) + `worker-aws-1`, `worker-aws-2`, `worker-gcp-1`
-- [ ] Each container has a Docker `HEALTHCHECK` that the orchestration waits on before marking it healthy
-- [ ] `docker compose ps` shows all 6 containers as healthy within 60 seconds of startup
-- [ ] Control-plane nodes are on both `net-aws`/`net-gcp` (so Raft traffic crosses the simulated boundary)
+- [ ] `docker compose up` starts exactly 9 named containers: `cp-aws-1`, `cp-gcp-1`, `cp-azure-1` (control plane) + `worker-aws-1`, `worker-aws-2`, `worker-gcp-1`, `worker-azure-1` (workers) + `gateway` + `minio`
+- [ ] Each container has a Docker `HEALTHCHECK` that orchestration waits on before marking it healthy
+- [ ] `docker compose ps` shows all 9 containers as healthy within 90 seconds of startup
+- [ ] Control-plane nodes are attached to all three networks so Raft traffic crosses all simulated cloud boundaries
 - [ ] Worker nodes are on their respective single network only
 - [ ] Environment variables for inter-service addresses use Docker service-name DNS (e.g. `cp-aws-1:50051`)
+- [ ] Startup order enforced: `gateway` → control plane nodes → workers
 
 ### Technical Notes
-- Use `depends_on` with `condition: service_healthy` so workers only start after control plane is ready
-- Set resource limits (`cpus`, `memory`) per container now — easier than adding them later and prevents runaway containers on a laptop
-- Use a `.env` file for tunable params: `RAFT_HEARTBEAT_MS`, `CROSS_CLOUD_LATENCY_MS`, `NUM_WORKERS`
-- Add a `docker-compose.override.yml` pattern for local dev (e.g. mount source dirs for hot reload)
-
+- Use `depends_on` with `condition: service_healthy` so workers only start after their local control plane node is ready
+- Set resource limits (`cpus`, `memory`) per container — prevents runaway containers on a laptop
+- Use `.env` file for tunable params: `RAFT_HEARTBEAT_MS`, `RAFT_ELECTION_TIMEOUT_MS`, `CROSS_CLOUD_LATENCY_MS`, `AZURE_LATENCY_MS`
+- Control plane healthcheck uses `curl` via alpine base image (distroless has no shell tools)
+- The 3-node Raft quorum (one per cloud) means any single cloud failure still allows commits — 2/3 nodes remain
 ---
 
 ## S0.5 — Shared Durable Storage Simulation (MinIO)
