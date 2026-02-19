@@ -1,19 +1,15 @@
-FROM continuumio/miniconda3:24.1.2-0
+FROM mambaorg/micromamba:1.5.8
 
 WORKDIR /app
 
-# Copy and create conda environment
 COPY environment.yml .
-RUN conda env create -f environment.yml && conda clean -afy
+RUN micromamba env create -f environment.yml && micromamba clean -afy
 
-# Activate env by default
-SHELL ["conda", "run", "-n", "pipeline-worker", "/bin/bash", "-c"]
-
-# Install any pip-only deps
 COPY requirements-pip.txt .
-RUN pip install -r requirements-pip.txt
+RUN micromamba run -n pipeline-worker pip install -r requirements-pip.txt
 
-# Copy source
+RUN micromamba install -n pipeline-worker -c conda-forge curl -y && micromamba clean -afy
+
 COPY worker/ ./worker/
 
 ENV PATH=/opt/conda/envs/pipeline-worker/bin:$PATH
@@ -24,4 +20,4 @@ EXPOSE 8081
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
     CMD curl -f http://localhost:8081/health || exit 1
 
-CMD ["python", "-m", "uvicorn", "worker.main:app", "--host", "0.0.0.0", "--port", "8081"]
+CMD ["micromamba", "run", "-n", "pipeline-worker", "python", "-m", "uvicorn", "worker.main:app", "--host", "0.0.0.0", "--port", "8081"]

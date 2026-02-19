@@ -1,13 +1,13 @@
-
 # ─────────────────────────────────────────────────────────────────
 #  Simulated multi-cloud network topology
 #
-#  net-aws  10.10.0.0/24  →  gateway  →  net-gcp  10.20.0.0/24
+#  net-aws   10.10.0.0/24  ──┐
+#  net-gcp   10.20.0.0/24  ──┼── gateway (routes + tc-netem)
+#  net-azure 10.30.0.0/24  ──┘
 #
-#  Cross-cloud traffic hops through the gateway container.
-#  tc-netem on the gateway adds configurable WAN latency so
-#  AWS↔GCP RTT ≈ CROSS_CLOUD_LATENCY_MS (default 50ms).
-#  Intra-cloud traffic stays on a single bridge: <1ms.
+#  Raft cluster: 1 node per cloud (3-node quorum, needs 2/3)
+#  Workers: 2x AWS, 1x GCP, 1x Azure
+#  MinIO: on all three networks
 # ─────────────────────────────────────────────────────────────────
 
 networks:
@@ -17,14 +17,12 @@ networks:
       config:
         - subnet: 10.10.0.0/24
           gateway: 10.10.0.1
-
   net-gcp:
     driver: bridge
     ipam:
       config:
         - subnet: 10.20.0.0/24
           gateway: 10.20.0.1
-
   net-azure:
     driver: bridge
     ipam:
@@ -32,35 +30,301 @@ networks:
         - subnet: 10.30.0.0/24
           gateway: 10.30.0.1
 
+volumes:
+  raft-data-aws-1:
+  raft-data-gcp-1:
+  raft-data-azure-1:
+  minio-data:
+
 services:
 
   # ── Gateway ────────────────────────────────────────────────────
-  # Sits on both networks and routes cross-cloud traffic.
-  # Runs tc-netem to simulate WAN latency on the GCP-facing interface.
   gateway:
     build:
       context: ../docker/gateway
       dockerfile: Dockerfile
     container_name: gateway
     hostname: gateway
-    # NET_ADMIN required for tc and ip route commands
     cap_add:
       - NET_ADMIN
     sysctls:
       - net.ipv4.ip_forward=1
     networks:
       net-aws:
-        ipv4_address: 10.10.0.254   # "top" of AWS subnet — easy to remember
+        ipv4_address: 10.10.0.254
       net-gcp:
-        ipv4_address: 10.20.0.254   # "top" of GCP subnet
+        ipv4_address: 10.20.0.254
       net-azure:
         ipv4_address: 10.30.0.254
     environment:
       - CROSS_CLOUD_LATENCY_MS=${CROSS_CLOUD_LATENCY_MS:-50}
       - CROSS_CLOUD_JITTER_MS=${CROSS_CLOUD_JITTER_MS:-5}
+      - AZURE_LATENCY_MS=${AZURE_LATENCY_MS:-75}
     healthcheck:
       test: ["CMD", "ping", "-c1", "-W1", "10.10.0.1"]
       interval: 5s
       timeout: 3s
       retries: 3
+    restart: unless-stopped
+
+  # ── Control Plane — AWS (Raft peer 1) ─────────────────────────
+  cp-aws-1:
+    build:
+      context: ../control-plane
+      dockerfile: Dockerfile
+    container_name: cp-aws-1
+    hostname: cp-aws-1
+    networks:
+      net-aws:
+        ipv4_address: 10.10.0.10
+      net-gcp:
+        ipv4_address: 10.20.0.10
+      net-azure:
+        ipv4_address: 10.30.0.10
+    environment:
+      - NODE_ID=cp-aws-1
+      - CLOUD_TAG=aws
+      - GRPC_ADDR=:50051
+      - HTTP_ADDR=:8080
+      - RAFT_ADDR=cp-aws-1:7000
+      - RAFT_PEERS=cp-aws-1:7000,cp-gcp-1:7000,cp-azure-1:7000
+      - RAFT_DATA_DIR=/data/raft
+      - RAFT_HEARTBEAT_MS=${RAFT_HEARTBEAT_MS:-500}
+      - RAFT_ELECTION_TIMEOUT_MS=${RAFT_ELECTION_TIMEOUT_MS:-1000}
+    volumes:
+      - raft-data-aws-1:/data/raft
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Control Plane — GCP (Raft peer 2) ─────────────────────────
+  cp-gcp-1:
+    build:
+      context: ../control-plane
+      dockerfile: Dockerfile
+    container_name: cp-gcp-1
+    hostname: cp-gcp-1
+    networks:
+      net-gcp:
+        ipv4_address: 10.20.0.11
+      net-aws:
+        ipv4_address: 10.10.0.11
+      net-azure:
+        ipv4_address: 10.30.0.11
+    environment:
+      - NODE_ID=cp-gcp-1
+      - CLOUD_TAG=gcp
+      - GRPC_ADDR=:50051
+      - HTTP_ADDR=:8080
+      - RAFT_ADDR=cp-gcp-1:7000
+      - RAFT_PEERS=cp-aws-1:7000,cp-gcp-1:7000,cp-azure-1:7000
+      - RAFT_DATA_DIR=/data/raft
+      - RAFT_HEARTBEAT_MS=${RAFT_HEARTBEAT_MS:-500}
+      - RAFT_ELECTION_TIMEOUT_MS=${RAFT_ELECTION_TIMEOUT_MS:-1000}
+    volumes:
+      - raft-data-gcp-1:/data/raft
+    ports:
+      - "8083:8080"
+      - "50052:50051"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Control Plane — Azure (Raft peer 3) ───────────────────────
+  cp-azure-1:
+    build:
+      context: ../control-plane
+      dockerfile: Dockerfile
+    container_name: cp-azure-1
+    hostname: cp-azure-1
+    networks:
+      net-azure:
+        ipv4_address: 10.30.0.13
+      net-aws:
+        ipv4_address: 10.10.0.13
+      net-gcp:
+        ipv4_address: 10.20.0.13
+    environment:
+      - NODE_ID=cp-azure-1
+      - CLOUD_TAG=azure
+      - GRPC_ADDR=:50051
+      - HTTP_ADDR=:8080
+      - RAFT_ADDR=cp-azure-1:7000
+      - RAFT_PEERS=cp-aws-1:7000,cp-gcp-1:7000,cp-azure-1:7000
+      - RAFT_DATA_DIR=/data/raft
+      - RAFT_HEARTBEAT_MS=${RAFT_HEARTBEAT_MS:-500}
+      - RAFT_ELECTION_TIMEOUT_MS=${RAFT_ELECTION_TIMEOUT_MS:-1000}
+    volumes:
+      - raft-data-azure-1:/data/raft
+    ports:
+      - "8085:8080"
+      - "50054:50051"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Worker — AWS 1 ─────────────────────────────────────────────
+  worker-aws-1:
+    build:
+      context: ../worker
+      dockerfile: Dockerfile
+    container_name: worker-aws-1
+    hostname: worker-aws-1
+    networks:
+      net-aws:
+        ipv4_address: 10.10.0.20
+    environment:
+      - WORKER_ID=worker-aws-1
+      - WORKER_CLOUD_TAG=aws
+      - ORCHESTRATOR_ADDR=cp-aws-1:50051
+      - HTTP_PORT=8081
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      cp-aws-1:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Worker — AWS 2 ─────────────────────────────────────────────
+  worker-aws-2:
+    build:
+      context: ../worker
+      dockerfile: Dockerfile
+    container_name: worker-aws-2
+    hostname: worker-aws-2
+    networks:
+      net-aws:
+        ipv4_address: 10.10.0.21
+    environment:
+      - WORKER_ID=worker-aws-2
+      - WORKER_CLOUD_TAG=aws
+      - ORCHESTRATOR_ADDR=cp-aws-1:50051
+      - HTTP_PORT=8081
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      cp-aws-1:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Worker — GCP 1 ─────────────────────────────────────────────
+  worker-gcp-1:
+    build:
+      context: ../worker
+      dockerfile: Dockerfile
+    container_name: worker-gcp-1
+    hostname: worker-gcp-1
+    networks:
+      net-gcp:
+        ipv4_address: 10.20.0.20
+    environment:
+      - WORKER_ID=worker-gcp-1
+      - WORKER_CLOUD_TAG=gcp
+      - ORCHESTRATOR_ADDR=cp-gcp-1:50051
+      - HTTP_PORT=8081
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      cp-gcp-1:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Worker — Azure 1 ───────────────────────────────────────────
+  worker-azure-1:
+    build:
+      context: ../worker
+      dockerfile: Dockerfile
+    container_name: worker-azure-1
+    hostname: worker-azure-1
+    networks:
+      net-azure:
+        ipv4_address: 10.30.0.20
+    environment:
+      - WORKER_ID=worker-azure-1
+      - WORKER_CLOUD_TAG=azure
+      - ORCHESTRATOR_ADDR=cp-azure-1:50051
+      - HTTP_PORT=8081
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      cp-azure-1:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── MinIO bucket init (one-shot) ──────────────────────────────
+  mc-init:
+    image: minio/mc
+    container_name: mc-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      net-aws:
+    volumes:
+      - ./init:/init
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
+    entrypoint: ["/bin/sh", "/init/init-buckets.sh"]
+    restart: "no"
+
+  # ── MinIO (neutral durable storage) ───────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    hostname: minio
+    networks:
+      net-aws:
+        ipv4_address: 10.10.0.100
+      net-gcp:
+        ipv4_address: 10.20.0.100
+      net-azure:
+        ipv4_address: 10.30.0.100
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
