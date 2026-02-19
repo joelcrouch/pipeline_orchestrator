@@ -1,45 +1,28 @@
 name: pipeline-worker
 channels:
-  - pytorch          # PyTorch official channel — always use this over conda-forge for torch
-  - nvidia           # CUDA toolkit + cuDNN
-  - conda-forge      # everything else
-  - defaults
-
+  - pytorch
+  - nvidia
+  - conda-forge
+  # Removed 'defaults' to avoid the deprecation warning and speed up solving
 dependencies:
-  # Python
   - python=3.11
-
-  # CUDA stack — conda manages driver compatibility here so you don't have to
   - cuda-toolkit=12.1
   - cudnn=8.9
-
-  # Core ML
   - pytorch::pytorch=2.3
   - pytorch::torchvision
   - pytorch::pytorch-cuda=12.1
-
-  # Data
   - numpy=1.26
   - pandas
   - scipy
-
-  # Comms & API
   - grpcio
-  - grpcio-tools         # protoc Python plugin
+  - grpcio-tools  # protoc Python plugin
   - fastapi
   - uvicorn
-
-  # Storage
-  - boto3                # S3/MinIO client
-
-  # Observability
-  - prometheus-client
-
-  # Dev & test
+  - boto3  # S3/MinIO client
   - pytest
-  - ruff                 # linter + formatter (replaces flake8/black/isort)
-  - pip                  # always include so pip install below works
-
+  - ruff # linter + formatter (replaces flake8/black/isort)
+  - pip # always include so pip install below works
   - pip:
-    - protobuf           # sometimes newer than conda-forge, keep in pip section
+    - protobuf # sometimes newer than conda-forge, keep in pip section
     - grpcio-status
+    - prometheus-client
