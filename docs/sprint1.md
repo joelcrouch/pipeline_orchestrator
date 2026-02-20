@@ -17,11 +17,11 @@
 
 ### Acceptance Criteria
 - [✅ ] `go get github.com/hashicorp/raft` and `go get github.com/hashicorp/raft-boltdb` added to `go.mod`
-- [ ] A `RaftNode` wrapper struct in `internal/raft/node.go` initializes `hashicorp/raft` with BoltDB log store and stable store
-- [ ] A `PipelineFSM` struct implements `raft.FSM` interface (`Apply`, `Snapshot`, `Restore`) — can be a skeleton for now
-- [ ] BoltDB files persist to a mounted volume — verified by restarting a node and confirming it rejoins without data loss
-- [ ] State transitions are logged via `slog` at INFO level by hooking into `raft.Config.Logger`
-- [ ] `go test ./internal/raft/... -run TestNodeInit` passes — verifies the node starts and reaches a valid initial state
+- [✅ ] A `RaftNode` wrapper struct in `internal/raft/node.go` initializes `hashicorp/raft` with BoltDB log store and stable store
+- [✅ ] A `PipelineFSM` struct implements `raft.FSM` interface (`Apply`, `Snapshot`, `Restore`) — can be a skeleton for now
+- [✅ ] BoltDB files persist to a mounted volume — verified by restarting a node and confirming it rejoins without data loss
+- [✅  ] State transitions are logged via `slog` at INFO level by hooking into `raft.Config.Logger`
+- [✅  ] `go test ./internal/raft/... -run TestNodeInit` passes — verifies the node starts and reaches a valid initial state
 
 ### Technical Notes
 - Key config values to set in `raft.Config`: `HeartbeatTimeout: 500ms`, `ElectionTimeout: 1000ms`, `CommitTimeout: 50ms` — conservative for cross-cloud use
@@ -38,11 +38,11 @@
 **As a** control plane developer, **I want to** bootstrap a 3-node Raft cluster so that exactly one node becomes leader after startup or after the current leader fails, **so that** the cluster is self-healing and always has a coordinator, even across the simulated multi-cloud boundary.
 
 ### Acceptance Criteria
-- [ ] On startup, the cluster elects a leader within 20 seconds (verified by watching logs)
-- [ ] If the leader container is killed (`docker stop`), a new leader is elected within 20 seconds
-- [ ] Only one leader exists at any term — verified by querying `/raft-state` on all 3 nodes simultaneously
-- [ ] Raft election events emitted as Prometheus metrics: `raft_elections_total`, `raft_term`, `raft_state` (0=Follower, 1=Candidate, 2=Leader)
-- [ ] A `/raft-state` HTTP debug endpoint returns the node's current Raft state, leader address, and current term
+- [ ✅] On startup, the cluster elects a leader within 20 seconds (verified by watching logs)
+- [✅ ] If the leader container is killed (`docker stop`), a new leader is elected within 20 seconds
+- [✅ ] Only one leader exists at any term — verified by querying `/raft-state` on all 3 nodes simultaneously
+- [ ✅] Raft election events emitted as Prometheus metrics: `raft_elections_total`, `raft_term`, `raft_state` (0=Follower, 1=Candidate, 2=Leader)
+- [✅ ] A `/raft-state` HTTP debug endpoint returns the node's current Raft state, leader address, and current term
 
 ### Technical Notes
 - Use `raft.BootstrapCluster()` with a `raft.Configuration` listing all 3 peers — only call this once on first boot, check with `raft.HasExistingState()`

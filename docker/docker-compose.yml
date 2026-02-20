@@ -91,6 +91,7 @@ services:
       - RAFT_DATA_DIR=/data/raft
       - RAFT_HEARTBEAT_MS=${RAFT_HEARTBEAT_MS:-500}
       - RAFT_ELECTION_TIMEOUT_MS=${RAFT_ELECTION_TIMEOUT_MS:-1000}
+      - RAFT_BOOTSTRAP=true
     volumes:
       - raft-data-aws-1:/data/raft
     ports:
@@ -130,6 +131,7 @@ services:
       - RAFT_DATA_DIR=/data/raft
       - RAFT_HEARTBEAT_MS=${RAFT_HEARTBEAT_MS:-500}
       - RAFT_ELECTION_TIMEOUT_MS=${RAFT_ELECTION_TIMEOUT_MS:-1000}
+      - RAFT_BOOTSTRAP=true
     volumes:
       - raft-data-gcp-1:/data/raft
     ports:
@@ -169,6 +171,7 @@ services:
       - RAFT_DATA_DIR=/data/raft
       - RAFT_HEARTBEAT_MS=${RAFT_HEARTBEAT_MS:-500}
       - RAFT_ELECTION_TIMEOUT_MS=${RAFT_ELECTION_TIMEOUT_MS:-1000}
+      - RAFT_BOOTSTRAP=true
     volumes:
       - raft-data-azure-1:/data/raft
     ports:
