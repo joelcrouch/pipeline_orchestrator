@@ -106,10 +106,123 @@
   }
 
   # ═══════════════════════════════════════════════════════════════════════════════
-  s1_2() {
-    header "S1.2 — Leader Election & Cluster Bootstrap (placeholder)"
-    info "S1.2 checks not yet implemented"
+  s1_2() {         
+    header "S1.2 — Leader Election & Cluster Bootstrap"                                                                        
+                                                                                                                               
+    if ! docker info &>/dev/null; then
+      info "Docker not available — skipping S1.2 checks"
+      return
+    fi
+
+    # Bring up the full 3-node cluster
+    info "Starting full 3-node cluster..."
+    $COMPOSE up --build -d gateway cp-aws-1 cp-gcp-1 cp-azure-1 2>&1 | tail -5
+    wait_healthy cp-aws-1 120
+    wait_healthy cp-gcp-1 120
+    wait_healthy cp-azure-1 120
+
+    # 1. Leader elected within 20s (nodes were just started — allow poll time)
+    info "Waiting for a leader to emerge across all 3 nodes..."
+    leader_found=false
+    deadline=$((SECONDS + 20))
+    while (( SECONDS < deadline )); do
+      for port in 8080 8083 8085; do
+        state=$(curl -sf "http://localhost:${port}/raft-state" 2>/dev/null | grep -o '"state":"[^"]*"' | cut -d'"' -f4)
+        if [[ "$state" == "Leader" ]]; then
+          leader_found=true
+          break 2
+        fi
+      done
+      sleep 1
+    done
+
+    if $leader_found; then
+      pass "Leader elected within 20s"
+    else
+      fail "No leader found within 20s"
+    fi
+
+    # 2. /raft-state endpoint on all 3 nodes returns valid JSON
+    info "Checking /raft-state on all 3 nodes"
+    all_raft_ok=true
+    for port in 8080 8083 8085; do
+      resp=$(curl -sf "http://localhost:${port}/raft-state" 2>/dev/null)
+      if echo "$resp" | grep -q '"state"'; then
+        pass "/raft-state on :${port} → $resp"
+      else
+        fail "/raft-state on :${port} returned no state"
+        all_raft_ok=false
+      fi
+    done
+
+    # 3. Exactly one leader across all 3 nodes
+    info "Verifying exactly one leader"
+    leader_count=0
+    for port in 8080 8083 8085; do
+      state=$(curl -sf "http://localhost:${port}/raft-state" 2>/dev/null | grep -o '"state":"[^"]*"' | cut -d'"' -f4)
+      [[ "$state" == "Leader" ]] && leader_count=$((leader_count + 1))
+    done
+    if (( leader_count == 1 )); then
+      pass "Exactly 1 leader across 3 nodes"
+    else
+      fail "Expected 1 leader, found ${leader_count}"
+    fi
+
+    # 4. Prometheus metrics endpoint reachable and contains raft metrics
+    info "Checking /metrics for raft gauges"
+    metrics_out=$(curl -sf "http://localhost:8080/metrics" 2>/dev/null)
+    for metric in raft_state raft_term raft_elections_total; do
+      if echo "$metrics_out" | grep -q "^${metric}"; then
+        pass "Prometheus metric '${metric}' present"
+      else
+        fail "Prometheus metric '${metric}' missing from /metrics"
+      fi
+    done
+
+    # 5. Leader failover within 20s
+    info "Testing leader failover — killing current leader..."
+    leader_node=""
+    for pair in "cp-aws-1:8080" "cp-gcp-1:8083" "cp-azure-1:8085"; do
+      name="${pair%%:*}"; port="${pair##*:}"
+      state=$(curl -sf "http://localhost:${port}/raft-state" 2>/dev/null | grep -o '"state":"[^"]*"' | cut -d'"' -f4)
+      [[ "$state" == "Leader" ]] && leader_node="$name"
+    done
+
+    if [[ -z "$leader_node" ]]; then
+      fail "Could not identify leader for failover test"
+      return
+    fi
+
+    info "Stopping leader: $leader_node"
+    docker stop "$leader_node" >/dev/null
+
+    new_leader=false
+    deadline=$((SECONDS + 20))
+    while (( SECONDS < deadline )); do
+      for port in 8080 8083 8085; do
+        state=$(curl -sf "http://localhost:${port}/raft-state" 2>/dev/null | grep -o '"state":"[^"]*"' | cut -d'"' -f4)
+        if [[ "$state" == "Leader" ]]; then
+          new_leader=true
+          break 2
+        fi
+      done
+      sleep 1
+    done
+
+    if $new_leader; then
+      pass "New leader elected within 20s of leader failure"
+    else
+      fail "No new leader within 20s after leader failure"
+    fi
+
+    # Restart the stopped node for a clean state
+    info "Restarting $leader_node..."
+    docker start "$leader_node" >/dev/null
+    wait_healthy "$leader_node" 60
+    pass "$leader_node rejoined cluster after restart"
   }
+
+# =================================================================================
 
   s1_3() {
     header "S1.3 — FSM State Machine & Log Replication (placeholder)"
