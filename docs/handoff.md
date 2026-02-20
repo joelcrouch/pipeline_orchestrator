@@ -15,6 +15,17 @@ A research-grade distributed ML pipeline orchestrator simulating AWS/GCP/Azure u
 - tc-netem on gateway: AWS↔GCP ~50ms, AWS↔Azure ~75ms, GCP↔Azure ~125ms
 - Control plane final Docker stage: `alpine:3.19` (not distroless) so curl/wget work for healthchecks
 - `on_event` deprecation warnings in FastAPI are known and harmless — will fix to `lifespan` pattern later
+- Worker base image: `mambaorg/micromamba:1.5.8` — base conda was polluted, switched to micromamba
+
+
+## micromamba Notes
+- Base conda env was polluted/inconsistent — switched to micromamba permanently
+- Binary lives at: `~/Projects/pipeline_orchestrator/bin/micromamba`
+- Env lives at: `~/.local/share/mamba/envs/pipeline-worker`
+- Activate with: `micromamba activate pipeline-worker`
+- Worker Dockerfile uses `mambaorg/micromamba:1.5.8` base image
+- curl installed inside the micromamba env via: `micromamba install -n pipeline-worker -c conda-forge curl`
+
 
 ## Project Structure
 ```
@@ -49,6 +60,7 @@ pipeline-orchestrator/
 ├── scripts/
 │   ├── sim-latency.sh      # test/status/set cross-cloud latency
 │   └── proto-gen.sh
+|   |__ verifysprint0.sh   #test sprint0 is complete
 ├── data/                   # gitignored, .gitkeep files present
 ├── Makefile
 ├── .env / .env.example
@@ -69,6 +81,19 @@ pipeline-orchestrator/
 | minio | - | S3 storage | all 3 | 9000, 9001 |
 
 Raft peer list: `cp-aws-1:7000,cp-gcp-1:7000,cp-azure-1:7000`
+
+## IP Address Map (important — duplicates caused bugs)
+| Container | net-aws | net-gcp | net-azure |
+|---|---|---|---|
+| gateway | 10.10.0.254 | 10.20.0.254 | 10.30.0.254 |
+| cp-aws-1 | 10.10.0.10 | 10.20.0.10 | 10.30.0.10 |
+| cp-gcp-1 | 10.10.0.11 | 10.20.0.11 | 10.30.0.11 |
+| cp-azure-1 | 10.10.0.13 | 10.20.0.13 | 10.30.0.13 |
+| worker-aws-1 | 10.10.0.20 | - | - |
+| worker-aws-2 | 10.10.0.21 | - | - |
+| worker-gcp-1 | - | 10.20.0.20 | - |
+| worker-azure-1 | - | - | 10.30.0.20 |
+| minio | 10.10.0.100 | 10.20.0.100 | 10.30.0.100 |
 
 ## Sprint 0 Status
 - [x] **S0.1** — Docker networks + gateway + tc-netem latency ✅
@@ -191,8 +216,8 @@ wo changes fixed everything:
 - S0.1 ✅ complete
 - S0.2 ✅ complete  
 - S0.3 ✅ complete
-- S0.4 🔄 in progress — apply Makefile fix, run make sim-up, verify docker compose ps shows all 9 healthy
-- S0.5 ⏳ not started — MinIO is running in compose, just needs bucket init script + smoke test
+- S0.4 ✅ complete — apply Makefile fix, run make sim-up, verify docker compose ps shows all 9 healthy
+- S0.5 ✅ complete — MinIO is running in compose, finished bucket init script + smoke test
 ```
 
 **5. First thing to do in new conversation:**
@@ -205,27 +230,31 @@ wo changes fixed everything:
 - [ ] **S0.5** — MinIO smoke test (included in compose, needs bucket init + test script)
 
 ## Sprint 1 Plan (HashiCorp Raft)
-- [ ] **S1.1** — HashiCorp Raft setup + BoltDB log store + PipelineFSM skeleton
+- [ ] **S1.1** — HashiCorp Raft setup + BoltDB log store + PipelineFSM skeleton (8pts)
   - `go get github.com/hashicorp/raft` + `go get github.com/hashicorp/raft-boltdb`
   - Key config: HeartbeatTimeout=500ms, ElectionTimeout=1000ms (cross-cloud tuned)
-  - BoltDB files at `/data/raft/` inside container (volume mounted)
-- [ ] **S1.2** — Cluster bootstrap + leader election
+  - BoltDB at `/data/raft/` inside container (volume mounted)
+  - PipelineFSM implements raft.FSM interface (Apply/Snapshot/Restore)
+- [ ] **S1.2** — Cluster bootstrap + leader election (8pts)
   - `raft.BootstrapCluster()` with 3 peers, check `raft.HasExistingState()` first
   - TCP transport on port 7000 (separate from gRPC 50051)
   - Prometheus: `raft_elections_total`, `raft_term`, `raft_state`
-- [ ] **S1.3** — PipelineFSM state machine + replication verification
+  - `/raft-state` HTTP endpoint showing current state/leader/term
+- [ ] **S1.3** — PipelineFSM + replication verification (8pts)
   - FSM holds `map[string]*WorkerInfo`, mutated by typed JSON commands
   - `RegisterWorkerCommand`, `UpdateWorkerStatusCommand`
   - Prometheus: `raft_replication_latency_ms` histogram
-- [ ] **S1.4** — Worker registration + heartbeat via gRPC
+- [ ] **S1.4** — Worker registration + heartbeat via gRPC (5pts)
   - `proto/worker.proto`: RegisterWorker + Heartbeat RPCs
   - Python `heartbeat.py` stub → real gRPC call
   - Leader redirects followers via `raft.Leader()`
+  - Workers marked offline after 3 missed heartbeats
 
+**Dependency order:** S1.1 → S1.2 → S1.3 → S1.4 (S1.4 can start once S1.2 is stable)
 ## Key Commands
 ```bash
 # Environment
-conda activate pipeline-worker
+micromamba activate pipeline-worker
 
 # Build & test
 make build        # go build ./... in control-plane/
@@ -240,18 +269,23 @@ bash scripts/sim-latency.sh status  # show tc rules
 
 # Logs
 docker logs cp-aws-1 --follow
-docker logs gateway
+docker logs gateway  --follow
 
 # Health checks
 curl http://localhost:8080/health        # cp-aws-1
 curl http://localhost:8083/health        # cp-gcp-1
 curl http://localhost:8085/health        # cp-azure-1
+curl http://localhost:9001          # MinIO console
 ```
 
 ## Immediate Next Steps
-1. Sprint 0 complete — start Sprint 1 with S1.1
-2. First thing: `cd control-plane && go get github.com/hashicorp/raft && go get github.com/hashicorp/raft-boltdb && go mod tidy`
-3. Work goes in `control-plane/internal/raft/`
+0. Sprint 0 complete — start Sprint 1 with S1.1
+1. `cd control-plane && go get github.com/hashicorp/raft && go get github.com/hashicorp/raft-boltdb && go mod tidy`
+2. Start S1.1 — write `RaftNode` wrapper in `internal/raft/node.go`
+3. Write `PipelineFSM` skeleton in `internal/raft/fsm.go`
+4. Write `TestNodeInit` test — verify node starts and reaches valid initial state
+5. `make build && make test` green before moving to S1.2
+
 
 ## Ports Quick Reference
 | Service | Port | Purpose |
