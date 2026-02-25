@@ -230,20 +230,9 @@ wo changes fixed everything:
 - [ ] **S0.5** — MinIO smoke test (included in compose, needs bucket init + test script)
 
 ## Sprint 1 Plan (HashiCorp Raft)
-- [ ] **S1.1** — HashiCorp Raft setup + BoltDB log store + PipelineFSM skeleton (8pts)
-  - `go get github.com/hashicorp/raft` + `go get github.com/hashicorp/raft-boltdb`
-  - Key config: HeartbeatTimeout=500ms, ElectionTimeout=1000ms (cross-cloud tuned)
-  - BoltDB at `/data/raft/` inside container (volume mounted)
-  - PipelineFSM implements raft.FSM interface (Apply/Snapshot/Restore)
-- [ ] **S1.2** — Cluster bootstrap + leader election (8pts)
-  - `raft.BootstrapCluster()` with 3 peers, check `raft.HasExistingState()` first
-  - TCP transport on port 7000 (separate from gRPC 50051)
-  - Prometheus: `raft_elections_total`, `raft_term`, `raft_state`
-  - `/raft-state` HTTP endpoint showing current state/leader/term
-- [ ] **S1.3** — PipelineFSM + replication verification (8pts)
-  - FSM holds `map[string]*WorkerInfo`, mutated by typed JSON commands
-  - `RegisterWorkerCommand`, `UpdateWorkerStatusCommand`
-  - Prometheus: `raft_replication_latency_ms` histogram
+- [x] **S1.1** — HashiCorp Raft setup + BoltDB log store + PipelineFSM skeleton ✅
+- [x] **S1.2** — Cluster bootstrap + leader election ✅
+- [x] **S1.3** — Full PipelineFSM + replication verification ✅
 - [ ] **S1.4** — Worker registration + heartbeat via gRPC (5pts)
   - `proto/worker.proto`: RegisterWorker + Heartbeat RPCs
   - Python `heartbeat.py` stub → real gRPC call
@@ -251,6 +240,94 @@ wo changes fixed everything:
   - Workers marked offline after 3 missed heartbeats
 
 **Dependency order:** S1.1 → S1.2 → S1.3 → S1.4 (S1.4 can start once S1.2 is stable)
+
+---
+
+### S1.1 — HashiCorp Raft Setup & Persistent Log Store ✅
+
+**What was built:**
+- Added `github.com/hashicorp/raft v1.7.3` and `github.com/hashicorp/raft-boltdb v1` to `control-plane/go.mod`
+- `internal/raft/node.go` — `RaftNode` struct wrapping `*hashiraft.Raft`; `NewRaftNode` creates TCP transport, BoltDB log+stable store, file snapshot store, and starts the node; internal `newRaftNodeWithTransport` constructor accepts any `hashiraft.Transport` so unit tests use `InmemTransport`
+- `internal/raft/fsm.go` — `PipelineFSM` skeleton implementing `hashiraft.FSM` with empty `Apply`, `Snapshot`, `Restore`
+- `internal/metrics/metrics.go` — Prometheus gauges: `raft_elections_total`, `raft_term`, `raft_state`
+- `TestNodeInit` — single bootstrapped node elects itself leader within 10s
+
+**Key config values** (`node.go`):
+```
+HeartbeatTimeout  = 500ms   (cross-cloud tuned)
+ElectionTimeout   = 1000ms
+CommitTimeout     = 50ms
+SnapshotInterval  = 30s
+SnapshotThreshold = 100
+```
+
+**BoltDB persistence:** files written to `cfg.DataDir` (env `RAFT_DATA_DIR`, default `/data/raft`); Docker volume `raft-data-*` mounted there so files survive container restarts.
+
+---
+
+### S1.2 — Cluster Bootstrap & Leader Election ✅
+
+**What was built:**
+- `raft.BootstrapCluster()` called only when `RAFT_BOOTSTRAP=true` AND `HasExistingState()` returns false — prevents re-bootstrap on restart
+- `peersToServers()` converts the `RAFT_PEERS` CSV env var (`cp-aws-1:7000,cp-gcp-1:7000,cp-azure-1:7000`) into a `raft.Configuration` server list; falls back to single-node if peers is empty (used in unit tests)
+- `TestBootstrapMultiNode` — 3-node cluster with `InmemTransport`, verifies exactly one leader elected within 15s
+- `/raft-state` HTTP endpoint on all 3 nodes returns `{"node_id":"...","state":"...","leader":"...","term":N}`
+- Prometheus stats polled every 5s in a background goroutine: `raft_state`, `raft_term`, `raft_elections_total` (incremented on term increase)
+
+**Bugs fixed during S1.2:**
+
+1. **`RAFT_BOOTSTRAPT=true` typo in `docker/docker-compose.yml`** — extra `T` on the env var name meant all nodes read an empty string from `RAFT_BOOTSTRAP`, never bootstrapped, stayed as Followers with term 0 forever. Fix: corrected to `RAFT_BOOTSTRAP=true`.
+
+2. **TCP transport binding to a single interface** — `NewTCPTransportWithLogger(cfg.RaftAddr, ...)` where `cfg.RaftAddr` was e.g. `cp-aws-1:7000`. Inside a multi-network Docker container, `cp-aws-1` resolved to one specific interface IP (e.g. `10.30.0.13` on net-azure). Peers on the other two networks got "connection refused". Fix: bind to `":"+port` (all interfaces, `0.0.0.0`), advertise the full `hostname:port` separately as the `TCPAddr` argument.
+
+**Verification:** `bash scripts/sprint1_verification.sh s1.2` — all checks green including leader election within 20s, exactly 1 leader, all 3 `/raft-state` endpoints, Prometheus metrics, and leader failover within 20s.
+
+---
+
+### S1.3 — Full PipelineFSM & Log Replication ✅
+
+**What was built:**
+
+**`internal/raft/fsm.go`** — full FSM replacing the skeleton:
+- `WorkerInfo` struct: `ID`, `Address`, `CloudTag`, `Status`, `LastSeen`
+- Typed command envelope: `Command{Type CommandType, Payload json.RawMessage}` serialized to `{"type":"register_worker","payload":{...}}`
+- `CommandType` constants: `CmdRegisterWorker`, `CmdUpdateWorkerStatus`
+- `PipelineFSM.Apply()` dispatches on command type via switch; `applyRegisterWorker` upserts a worker with `Status: "online"`; `applyUpdateWorkerStatus` mutates `Status` and `LastSeen`
+- `sync.RWMutex` on the workers map — Raft calls `Apply()` serially so no lock is needed there, but external HTTP readers (goroutines) hold `RLock`
+- `Snapshot()` deep-copies the map under `RLock`, JSON-marshals it, returns a `pipelineFSMSnapshot`
+- `Restore()` JSON-decodes into a fresh map under `WLock`, replacing all state
+- `Workers()` and `GetWorker(id)` — safe copy helpers for external readers
+- `MarshalCommand()` convenience helper used by both production code and tests
+- `var _ hashiraft.FSM = (*PipelineFSM)(nil)` compile-time interface check
+
+**`internal/raft/node.go`** — added `Apply(cmd []byte, timeout time.Duration) error` method that calls `n.raft.Apply()` and records elapsed time in `metrics.RaftReplicationLatencyMs`
+
+**`internal/metrics/metrics.go`** — added `raft_replication_latency_ms` Histogram with exponential buckets `1ms → ~4096ms`
+
+**`cmd/orchestrator/main.go`** — `fsm` created before `raftNode` so the `/cluster-state` handler can read `fsm.Workers()` and return the full worker registry as JSON
+
+**`/cluster-state` HTTP endpoint** returns:
+```json
+{"node_id":"cp-aws-1","state":"Leader","workers":[...]}
+```
+
+**Test suite** (`internal/raft/raft_test.go`):
+- `makeCluster(t, n)` — creates n-node `InmemTransport` cluster, fully meshed and bootstrapped, with `t.Cleanup` shutdown
+- `waitForLeader(t, nodes, timeout)` — polls until one node reaches `hashiraft.Leader`
+- `TestFSMApply` — directly calls `fsm.Apply()`, verifies register + status-update mutations
+- `TestFSMSnapshotRestore` — 3 workers added, snapshot taken, fresh FSM restored, all 3 workers verified consistent
+- `TestReplicationToFollowers` — leader `Apply()` call, all 3 FSMs must reflect the entry within 500ms
+- `TestMajorityQuorum` — one follower isolated with `InmemTransport.DisconnectAll()`, `Apply()` still succeeds (2/3 majority), isolated node catches up after reconnect
+
+**Bugs fixed during S1.3:**
+
+1. **`cmd/orchestrator/main_test.go` wrong package** — file had `package raft` (copy-paste from `internal/raft/raft_test.go`) placed in `cmd/orchestrator/`, causing `found packages main and raft` build error. Fix: replaced with a proper `package main` test covering `envOr`, `boolEnv`, and `splitCSV`.
+
+2. **`cmd/orchestrator/main.go` garbled `NewRaftNode` call** — `fsm :=` assignment was embedded inside the constructor argument list, and had a duplicate/corrupted block below it. Also contained `internraft` typo (missing `al`). Fix: rewrote the file cleanly.
+
+3. **`TestMajorityQuorum` race condition** — `raft.Apply()` returning success means the log entry is *committed* (majority acknowledged), but follower FSMs dispatch the entry asynchronously after the commit. Checking follower FSMs immediately after `Apply()` returned a false negative. Fix: added a 500ms poll loop after `Apply()` before asserting connected-follower FSMs, mirroring the pattern in `TestReplicationToFollowers`. Also fixed a `deadline :=` redeclaration compile error caused by the same variable name being used twice in the same function scope.
+
+**Verification:** `bash scripts/sprint1_verification.sh s1.3` — all 6 acceptance criteria covered and green.
 ## Key Commands
 ```bash
 # Environment
@@ -279,12 +356,16 @@ curl http://localhost:9001          # MinIO console
 ```
 
 ## Immediate Next Steps
-0. Sprint 0 complete — start Sprint 1 with S1.1
-1. `cd control-plane && go get github.com/hashicorp/raft && go get github.com/hashicorp/raft-boltdb && go mod tidy`
-2. Start S1.1 — write `RaftNode` wrapper in `internal/raft/node.go`
-3. Write `PipelineFSM` skeleton in `internal/raft/fsm.go`
-4. Write `TestNodeInit` test — verify node starts and reaches valid initial state
-5. `make build && make test` green before moving to S1.2
+- S1.1, S1.2, S1.3 complete — next is **S1.4** on a new branch
+1. `git checkout -b feature/s1.4-worker-registration`
+2. Define `proto/worker.proto` — `RegisterWorker` and `Heartbeat` RPCs
+3. Run `bash scripts/proto-gen.sh` to generate Go + Python stubs
+4. Implement `WorkerService` gRPC server in `internal/agent/` using `fsm.Apply(CmdRegisterWorker, ...)` on the leader
+5. Update Python `worker/heartbeat.py` stub → real gRPC `Heartbeat` call
+6. Add leader-redirect logic: followers return `raft.Leader()` address so clients can retry
+7. Mark workers offline after 3 missed heartbeats (background goroutine checking `LastSeen`)
+8. `go test ./... && go build ./...` green
+9. `bash scripts/sprint1_verification.sh s1.4`
 
 
 ## Ports Quick Reference

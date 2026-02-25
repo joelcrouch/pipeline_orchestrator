@@ -6,21 +6,25 @@ import (
 )
 
 var (
-	// RaftElectionsTotal counts leader elections (term increments).
 	RaftElectionsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "raft_elections_total",
 		Help: "Total number of Raft leader elections observed (term increments).",
 	})
 
-	// RaftTerm tracks the current Raft term.
 	RaftTerm = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "raft_term",
 		Help: "Current Raft term.",
 	})
 
-	// RaftState tracks the current Raft role: 0=Follower 1=Candidate 2=Leader 3=Shutdown.
 	RaftState = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "raft_state",
 		Help: "Current Raft state: 0=Follower, 1=Candidate, 2=Leader, 3=Shutdown.",
+	})
+
+	// RaftReplicationLatencyMs tracks time from raft.Apply() to commit confirmation.
+	RaftReplicationLatencyMs = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "raft_replication_latency_ms",
+		Help:    "Milliseconds from raft.Apply() call to commit confirmation.",
+		Buckets: prometheus.ExponentialBuckets(1, 2, 12), // 1ms → ~4096ms
 	})
 )

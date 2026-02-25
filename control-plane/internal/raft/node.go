@@ -1,5 +1,3 @@
-// Package raft implements a Raft consensus algorithm for the
-// distributed control plane. Implementation begins in Sprint 1.
 package raft
 
 import (
@@ -12,37 +10,36 @@ import (
 	"github.com/hashicorp/go-hclog"
 	hashiraft "github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb"
+
+	"github.com/joelcrouch/pipeline-orchestrator/control-plane/internal/metrics"
 )
 
+// Config holds the configuration for a RaftNode.
 type Config struct {
 	Bootstrap bool
 	DataDir   string
 	NodeID    string
-	Peers     []string //host:port entries fro all cluster members, including self
+	Peers     []string // "host:port" entries for all cluster members, including self
 	RaftAddr  string
 }
 
-// raftNode wraps hcorp/raft with botldb persistnce
+// RaftNode wraps hashicorp/raft with BoltDB persistence.
 type RaftNode struct {
 	raft *hashiraft.Raft
 	cfg  Config
 }
 
-// newRaftNode makes/starts a raft node with tcp transport
-// boltdb (bdb) files stored in cfg.DataDir -mount /data/raft/as a docker volume
+// NewRaftNode creates and starts a Raft node with a TCP transport.
+// BoltDB files are stored in cfg.DataDir — mount /data/raft/ as a Docker volume.
 func NewRaftNode(cfg Config, fsm hashiraft.FSM) (*RaftNode, error) {
 	_, port, err := net.SplitHostPort(cfg.RaftAddr)
 	if err != nil {
 		return nil, fmt.Errorf("parse raft addr %q: %w", cfg.RaftAddr, err)
 	}
-
-	// Advertise the configured hostname:port to peers.
-	// Bind to all interfaces so every Docker network is reachable.
 	advertise, err := net.ResolveTCPAddr("tcp", cfg.RaftAddr)
 	if err != nil {
 		return nil, fmt.Errorf("resolve raft addr %q: %w", cfg.RaftAddr, err)
 	}
-
 	logger := hclog.New(&hclog.LoggerOptions{Name: "raft", Level: hclog.Info})
 	transport, err := hashiraft.NewTCPTransportWithLogger(
 		":"+port, advertise, 3, 10*time.Second, logger,
@@ -56,11 +53,11 @@ func NewRaftNode(cfg Config, fsm hashiraft.FSM) (*RaftNode, error) {
 // newRaftNodeWithTransport is the internal constructor — used by NewRaftNode and tests.
 func newRaftNodeWithTransport(cfg Config, fsm hashiraft.FSM, transport hashiraft.Transport,
 	logger hclog.Logger) (*RaftNode, error) {
+
 	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
-	// One BoltDB file serves as both LogStore and StableStore.
 	boltPath := filepath.Join(cfg.DataDir, "raft.db")
 	boltStore, err := raftboltdb.NewBoltStore(boltPath)
 	if err != nil {
@@ -78,6 +75,8 @@ func newRaftNodeWithTransport(cfg Config, fsm hashiraft.FSM, transport hashiraft
 	raftCfg.HeartbeatTimeout = 500 * time.Millisecond
 	raftCfg.ElectionTimeout = 1000 * time.Millisecond
 	raftCfg.CommitTimeout = 50 * time.Millisecond
+	raftCfg.SnapshotInterval = 30 * time.Second
+	raftCfg.SnapshotThreshold = 100
 	raftCfg.Logger = logger
 
 	r, err := hashiraft.NewRaft(raftCfg, fsm, boltStore, boltStore, snapStore, transport)
@@ -104,19 +103,16 @@ func newRaftNodeWithTransport(cfg Config, fsm hashiraft.FSM, transport hashiraft
 }
 
 // peersToServers converts a Peers slice into a raft.Configuration server list.
-// If peers is empty it falls back to a single-node entry (used in tests).
+// Falls back to single-node if peers is empty (used in tests).
 func peersToServers(peers []string, nodeID string, localAddr hashiraft.ServerAddress) []hashiraft.Server {
 	if len(peers) == 0 {
-		return []hashiraft.Server{{
-			ID:      hashiraft.ServerID(nodeID),
-			Address: localAddr,
-		}}
+		return []hashiraft.Server{{ID: hashiraft.ServerID(nodeID), Address: localAddr}}
 	}
 	servers := make([]hashiraft.Server, 0, len(peers))
 	for _, peer := range peers {
 		id := peer
 		if host, _, err := net.SplitHostPort(peer); err == nil {
-			id = host // "cp-aws-1:7000" → ServerID "cp-aws-1"
+			id = host
 		}
 		servers = append(servers, hashiraft.Server{
 			ID:      hashiraft.ServerID(id),
@@ -124,6 +120,16 @@ func peersToServers(peers []string, nodeID string, localAddr hashiraft.ServerAdd
 		})
 	}
 	return servers
+}
+
+// Apply submits a command to the Raft cluster and waits for commit confirmation.
+// Returns raft.ErrNotLeader if called on a follower.
+func (n *RaftNode) Apply(cmd []byte, timeout time.Duration) error {
+	start := time.Now()
+	f := n.raft.Apply(cmd, timeout)
+	err := f.Error()
+	metrics.RaftReplicationLatencyMs.Observe(float64(time.Since(start).Milliseconds()))
+	return err
 }
 
 // State returns the current Raft state of this node.

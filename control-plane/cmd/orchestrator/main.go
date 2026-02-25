@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -48,13 +49,14 @@ func main() {
 	)
 
 	// ── Raft node ────────────────────────────────────────────────
+	fsm := internalraft.NewPipelineFSM()
 	raftNode, err := internalraft.NewRaftNode(internalraft.Config{
 		NodeID:    nodeID,
 		RaftAddr:  raftAddr,
 		DataDir:   raftDataDir,
 		Bootstrap: raftBootstrap,
 		Peers:     raftPeers,
-	}, &internalraft.PipelineFSM{})
+	}, fsm)
 	if err != nil {
 		slog.Error("failed to start raft node", "error", err)
 		os.Exit(1)
@@ -120,8 +122,22 @@ func main() {
 	})
 
 	mux.HandleFunc("/cluster-state", func(w http.ResponseWriter, r *http.Request) {
-		// Populated by agent registry in S1.4
-		_, _ = fmt.Fprintf(w, `{"node_id":"%s","workers":[]}`, nodeID)
+		workers := fsm.Workers()
+		list := make([]*internalraft.WorkerInfo, 0, len(workers))
+		for _, info := range workers {
+			list = append(list, info)
+		}
+		resp := struct {
+			NodeID  string                   `json:"node_id"`
+			State   string                   `json:"state"`
+			Workers []*internalraft.WorkerInfo `json:"workers"`
+		}{
+			NodeID:  nodeID,
+			State:   raftNode.State().String(),
+			Workers: list,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 
 	mux.Handle("/metrics", promhttp.Handler())
