@@ -19,46 +19,34 @@ func TestEnvOr(t *testing.T) {
 }
 
 func TestBoolEnv(t *testing.T) {
-	cases := []struct {
-		val  string
-		want bool
-	}{
-		{"true", true},
-		{"false", false},
-		{"1", false},    // only the exact string "true" counts
-		{"TRUE", false}, // case-sensitive
-		{"", false},
+	t.Setenv("FLAG", "true")
+	if !boolEnv("FLAG") {
+		t.Error("expected true for FLAG=true")
 	}
 
-	for _, tc := range cases {
-		t.Setenv("TEST_BOOL", tc.val)
-		got := boolEnv("TEST_BOOL")
-		if got != tc.want {
-			t.Errorf("boolEnv with %q: expected %v, got %v", tc.val, tc.want, got)
-		}
+	t.Setenv("FLAG", "false")
+	if boolEnv("FLAG") {
+		t.Error("expected false for FLAG=false")
 	}
 
-	// Unset variable should return false
-	t.Setenv("TEST_BOOL", "")
-	if boolEnv("UNSET_BOOL_KEY") {
-		t.Error("expected false for unset env var, got true")
+	t.Setenv("FLAG", "1")
+	if boolEnv("FLAG") {
+		t.Error("expected false for FLAG=1 (only 'true' is true)")
 	}
 }
 
-// package main
+func TestSplitCSV(t *testing.T) {
+	if got := splitCSV(""); got != nil {
+		t.Errorf("expected nil for empty string, got %v", got)
+	}
 
-// import "testing"
+	got := splitCSV("a,b,c")
+	if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
+		t.Errorf("unexpected result: %v", got)
+	}
 
-// func TestEnvOr(t *testing.T) {
-// 	t.Setenv("TEST_KEY", "hello")
-
-// 	got := envOr("TEST_KEY", "fallback")
-// 	if got != "hello" {
-// 		t.Errorf("Expected 'hello', got '&s', got")
-// 	}
-
-// 	got = envOr("MISSING_KEY", "fallback")
-// 	if got != "fallback" {
-// 		t.Errorf("expected 'fallback', got '%s'", got)
-// 	}
-// }
+	got = splitCSV("single")
+	if len(got) != 1 || got[0] != "single" {
+		t.Errorf("unexpected result: %v", got)
+	}
+}

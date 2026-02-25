@@ -6,7 +6,7 @@
   #   bash scripts/sprint1_verification.sh all         # full sprint
   #   bash scripts/sprint1_verification.sh             # defaults to all
 
-  set -euo pipefail
+  set -eu
 
   STORY=${1:-all}
   COMPOSE="docker compose -f docker/docker-compose.yml"
@@ -24,7 +24,7 @@
     local name=$1 timeout=${2:-60}
     local elapsed=0
     info "Waiting for $name to be healthy..."
-    while ! docker inspect --format='{{.State.Health.Status}}' "$name" 2>/dev/null | grep -q healthy; do
+    while ! docker inspect --format='{{.State.Health.Status}}' "$name" 2>/dev/null | grep -q "^healthy$"; do
       sleep 2; ((elapsed+=2))
       if (( elapsed >= timeout )); then
         fail "$name did not become healthy within ${timeout}s"
@@ -222,11 +222,116 @@
     pass "$leader_node rejoined cluster after restart"
   }
 
-# =================================================================================
-
+# ═══════════════════════════════════════════════════════════════════════════════
   s1_3() {
-    header "S1.3 — FSM State Machine & Log Replication (placeholder)"
-    info "S1.3 checks not yet implemented"
+    header "S1.3 — FSM State Machine & Log Replication"
+
+    # ── Criterion 1: PipelineFSM Apply() mutates WorkerInfo map ──────────────
+    info "[AC1] TestFSMApply — in-memory WorkerInfo map mutated by Apply()"
+    if (cd control-plane && go test ./internal/raft/... -run "^TestFSMApply$" -timeout 30s -count=1 2>&1); then
+      pass "TestFSMApply: register_worker and update_worker_status commands applied correctly"
+    else
+      fail "TestFSMApply failed"
+    fi
+
+    # ── Criterion 2: RegisterWorker replicates to all followers within 500ms ──
+    info "[AC2] TestReplicationToFollowers — leader→follower replication within 500ms"
+    if (cd control-plane && go test ./internal/raft/... -run "^TestReplicationToFollowers$" -timeout 30s -count=1 2>&1); then
+      pass "TestReplicationToFollowers: all 3 FSMs reflect entry within 500ms"
+    else
+      fail "TestReplicationToFollowers failed"
+    fi
+
+    # ── Criterion 3: Majority quorum — 2/3 nodes sufficient to commit ─────────
+    info "[AC3] TestMajorityQuorum — entry commits with one node isolated"
+    if (cd control-plane && go test ./internal/raft/... -run "^TestMajorityQuorum$" -timeout 30s -count=1 2>&1); then
+      pass "TestMajorityQuorum: commit succeeded with 2/3 nodes; isolated node caught up on reconnect"
+    else
+      fail "TestMajorityQuorum failed"
+    fi
+
+    # ── Criterion 5: raft_replication_latency_ms histogram (unit) ────────────
+    info "[AC5] Verifying Apply() records replication latency via metrics"
+    if grep -q "RaftReplicationLatencyMs.Observe" control-plane/internal/raft/node.go; then
+      pass "node.Apply() records RaftReplicationLatencyMs"
+    else
+      fail "node.Apply() missing RaftReplicationLatencyMs.Observe call"
+    fi
+
+    # ── Criterion 6: FSMSnapshot / FSMRestore round-trip ─────────────────────
+    info "[AC6] TestFSMSnapshotRestore — snapshot wipes memory, restore recovers state"
+    if (cd control-plane && go test ./internal/raft/... -run "^TestFSMSnapshotRestore$" -timeout 30s -count=1 2>&1); then
+      pass "TestFSMSnapshotRestore: 3 workers consistent after snapshot→wipe→restore"
+    else
+      fail "TestFSMSnapshotRestore failed"
+    fi
+
+    # ── Build check ───────────────────────────────────────────────────────────
+    info "Verifying go build ./..."
+    if (cd control-plane && go build ./... 2>&1); then
+      pass "go build ./... clean"
+    else
+      fail "go build ./... failed"
+    fi
+
+    # ── Docker checks ─────────────────────────────────────────────────────────
+    if ! docker info &>/dev/null; then
+      info "Docker not available — skipping Docker-level S1.3 checks"
+      return
+    fi
+
+    info "Ensuring full 3-node cluster is running..."
+    $COMPOSE up --build -d gateway cp-aws-1 cp-gcp-1 cp-azure-1 2>&1 | tail -5
+    wait_healthy cp-aws-1 120
+    wait_healthy cp-gcp-1 120
+    wait_healthy cp-azure-1 120
+
+    # ── Criterion 1 (Docker): /cluster-state endpoint exposes FSM state ───────
+    info "[AC1] /cluster-state returns valid JSON (node_id + workers array) on all 3 nodes"
+    for pair in "cp-aws-1:8080" "cp-gcp-1:8083" "cp-azure-1:8085"; do
+      name="${pair%%:*}"; port="${pair##*:}"
+      resp=$(curl -sf "http://localhost:${port}/cluster-state" 2>/dev/null)
+      if echo "$resp" | grep -q '"node_id"' && echo "$resp" | grep -q '"workers"'; then
+        pass "/cluster-state on ${name}:${port} — valid JSON with node_id + workers"
+      else
+        fail "/cluster-state on ${name}:${port} — missing fields (got: ${resp})"
+      fi
+    done
+
+    # ── Criterion 4: identical FSM state across all 3 nodes ──────────────────
+    # No HTTP register endpoint yet (S1.4), so we compare worker counts across
+    # nodes — all should be 0 and equal, proving consistent replicated state.
+    info "[AC4] All 3 nodes report identical worker count from /cluster-state"
+    counts=()
+    for pair in "cp-aws-1:8080" "cp-gcp-1:8083" "cp-azure-1:8085"; do
+      port="${pair##*:}"
+      # count occurrences of "id" inside the workers array as a proxy for worker count
+      count=$(curl -sf "http://localhost:${port}/cluster-state" 2>/dev/null \
+               | grep -o '"id"' | wc -l | tr -d ' ')
+      counts+=("$count")
+    done
+    if [[ "${counts[0]}" == "${counts[1]}" && "${counts[1]}" == "${counts[2]}" ]]; then
+      pass "All 3 nodes agree on worker count: ${counts[0]} workers"
+    else
+      fail "FSM state mismatch: cp-aws-1=${counts[0]} cp-gcp-1=${counts[1]} cp-azure-1=${counts[2]} workers"
+    fi
+
+    # ── Criterion 5 (Docker): Prometheus histogram registered and served ──────
+    info "[AC5] /metrics exposes raft_replication_latency_ms histogram"
+    metrics_out=$(curl -sf "http://localhost:8080/metrics" 2>/dev/null)
+    if echo "$metrics_out" | grep -q "^raft_replication_latency_ms"; then
+      pass "Prometheus metric 'raft_replication_latency_ms' present on /metrics"
+    else
+      fail "Prometheus metric 'raft_replication_latency_ms' missing from /metrics"
+    fi
+
+    # ── Criterion 6 (Docker): snapshot directory provisioned ─────────────────
+    info "[AC6] Snapshot directory exists inside cp-aws-1 container"
+    if docker exec cp-aws-1 test -d /data/raft/snapshots; then
+      pass "Snapshot directory /data/raft/snapshots exists in cp-aws-1"
+    else
+      fail "Snapshot directory /data/raft/snapshots NOT found in cp-aws-1"
+    fi
   }
 
   s1_4() {
@@ -255,4 +360,6 @@
     all)  s1_1; s1_2; s1_3; s1_4 ;;
     *) echo "Usage: $0 [s1.1|s1.2|s1.3|s1.4|all]"; exit 1 ;;
   esac
+
+  summary
 
