@@ -19,6 +19,7 @@ WORKER_ID = os.environ.get("WORKER_ID", "worker-unknown")
 CLOUD_TAG = os.environ.get("WORKER_CLOUD_TAG", "unknown")
 ORCHESTRATOR_ADDR = os.environ.get("ORCHESTRATOR_ADDR", "")
 HTTP_PORT = int(os.environ.get("HTTP_PORT", "8081"))
+WORKER_ADDR = os.environ.get("WORKER_ADDR", "") or f"{WORKER_ID}:{HTTP_PORT}"
 
 # ── App ───────────────────────────────────────────────────────────
 app = FastAPI(title="Pipeline Worker", version="0.1.0")
@@ -37,6 +38,7 @@ async def startup():
             worker_id=WORKER_ID,
             cloud_tag=CLOUD_TAG,
             orchestrator_addr=ORCHESTRATOR_ADDR,
+            worker_addr=WORKER_ADDR,
         )
         heartbeat_thread = threading.Thread(
             target=heartbeat_client.run, daemon=True

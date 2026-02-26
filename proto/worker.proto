@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package worker;
+
+option go_package = "github.com/joelcrouch/pipeline-orchestrator/control-plane/internal/gen/worker;workerpb";
+
+// RegisterWorkerRequest is sent by a Python worker on startup.
+message RegisterWorkerRequest {
+  string worker_id = 1;
+  string address   = 2;  // "hostname:port" of the worker's HTTP endpoint
+  string cloud_tag = 3;
+}
+
+// RegisterWorkerResponse carries the result or a follower-redirect address.
+message RegisterWorkerResponse {
+  bool   ok          = 1;
+  string leader_addr = 2;  // non-empty: this node is a follower — retry against this gRPC address
+  string error       = 3;
+}
+
+// HeartbeatRequest is sent by a worker every 5 seconds.
+message HeartbeatRequest {
+  string worker_id = 1;
+}
+
+// HeartbeatResponse carries the result or a follower-redirect address.
+message HeartbeatResponse {
+  bool   ok          = 1;
+  string leader_addr = 2;
+  string error       = 3;
+}
+
+// WorkerService handles worker lifecycle on the Raft leader.
+service WorkerService {
+  rpc RegisterWorker (RegisterWorkerRequest) returns (RegisterWorkerResponse);
+  rpc Heartbeat      (HeartbeatRequest)      returns (HeartbeatResponse);
+}
