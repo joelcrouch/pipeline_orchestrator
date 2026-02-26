@@ -233,11 +233,7 @@ wo changes fixed everything:
 - [x] **S1.1** — HashiCorp Raft setup + BoltDB log store + PipelineFSM skeleton ✅
 - [x] **S1.2** — Cluster bootstrap + leader election ✅
 - [x] **S1.3** — Full PipelineFSM + replication verification ✅
-- [ ] **S1.4** — Worker registration + heartbeat via gRPC (5pts)
-  - `proto/worker.proto`: RegisterWorker + Heartbeat RPCs
-  - Python `heartbeat.py` stub → real gRPC call
-  - Leader redirects followers via `raft.Leader()`
-  - Workers marked offline after 3 missed heartbeats
+- [x] **S1.4** — Worker registration + heartbeat via gRPC ✅
 
 **Dependency order:** S1.1 → S1.2 → S1.3 → S1.4 (S1.4 can start once S1.2 is stable)
 
@@ -327,7 +323,58 @@ SnapshotThreshold = 100
 
 3. **`TestMajorityQuorum` race condition** — `raft.Apply()` returning success means the log entry is *committed* (majority acknowledged), but follower FSMs dispatch the entry asynchronously after the commit. Checking follower FSMs immediately after `Apply()` returned a false negative. Fix: added a 500ms poll loop after `Apply()` before asserting connected-follower FSMs, mirroring the pattern in `TestReplicationToFollowers`. Also fixed a `deadline :=` redeclaration compile error caused by the same variable name being used twice in the same function scope.
 
-**Verification:** `bash scripts/sprint1_verification.sh s1.3` — all 6 acceptance criteria covered and green.
+**Verification:** `bash scripts/sprint1_verification.sh s1.3` — all acceptance criteria green, including two checks added at the end of S1.4 work:
+- **AC2 re-election test** (Docker): stops the current Raft leader, polls the remaining two nodes for a new leader, asserts it emerges within 20s, then restarts the stopped node and confirms it rejoins
+- **AC5+ metrics spot-check** (Docker): re-fetches `/metrics` after the election, verifies `raft_state`, `raft_term`, `raft_elections_total`, and `raft_replication_latency_ms_count` all have live numeric values
+
+---
+
+### S1.4 — Worker Registration & Heartbeat via gRPC ✅
+
+**What was built:**
+
+**`proto/worker.proto`** — defines `WorkerService` with two RPCs:
+- `RegisterWorker(RegisterWorkerRequest) → RegisterWorkerResponse` — initial worker registration; `leader_addr` in the response is the follower-redirect address
+- `Heartbeat(HeartbeatRequest) → HeartbeatResponse` — periodic liveness ping with same redirect semantics
+
+**`scripts/proto-gen.sh`** — generates Go stubs into `control-plane/internal/gen/worker/` and Python stubs into `worker/worker/gen/`; fixes the bare `import worker_pb2` → relative import in `worker_pb2_grpc.py`
+
+**`control-plane/internal/agent/registry.go`** — `AgentRegistry` implementing `WorkerServiceServer`:
+- `RaftApplier` interface narrows `*RaftNode` to just `Apply / Leader / LeaderID / State` — keeps the registry unit-testable without a real cluster
+- `HeartbeatTracker` (in-memory, not Raft-replicated) tracks `LastSeen` and `MarkedOffline` per worker
+- `RegisterWorker` RPC: leader-only; applies `CmdRegisterWorker` via Raft; followers redirect
+- `Heartbeat` RPC: leader-only; resets `LastSeen` and `MarkedOffline`; creates tracker on first heartbeat after failover
+- `checkHeartbeats()`: called every 5s by `monitorLoop`; marks workers with `>15s` silence offline via `CmdUpdateWorkerStatus`; `MarkedOffline=true` set under lock before releasing to prevent duplicate Apply calls
+- `raftAddrToGRPC()`: converts Raft peer address to gRPC address for redirects; if the host is an IP (see bug below), falls back to `LeaderID()` (the hostname)
+
+**`control-plane/internal/raft/node.go`** — added `LeaderID() string` using `raft.LeaderWithID()`; returns the leader's server ID (e.g. `"cp-gcp-1"`), which Docker DNS resolves correctly on every subnet
+
+**`cmd/orchestrator/main.go`** — wires `AgentRegistry` into the gRPC server (`workerpb.RegisterWorkerServiceServer`) and manages its context lifecycle
+
+**`worker/worker/heartbeat.py`** — full rewrite with real gRPC:
+- `_register_with_retry()` loops until stop event or success; retries on gRPC error after 5s sleep
+- `_register()` returns `True` on success, `False` on follower redirect (updates `_orchestrator_addr`), raises on hard error
+- `_send_heartbeat()` wraps the entire call in `try/except` — never raises, silently follows redirects
+- `worker_addr` kwarg defaults to `worker_id` for backward compatibility with existing tests
+
+**`worker/worker/main.py`** — reads `WORKER_ADDR` env var; falls back to `{WORKER_ID}:{HTTP_PORT}` if unset; passes it to `HeartbeatClient`
+
+**`docker/docker-compose.yml`** — added `WORKER_ADDR=<service>:8081` to all 4 worker services
+
+**`worker/pyproject.toml`** — added `pythonpath = ["."]` to `[tool.pytest.ini_options]` to fix `No module named 'worker'` import error in pytest
+
+**Test suite:**
+- 13 Go unit tests in `internal/agent/registry_test.go` using `mockRaft`: RegisterWorker/Heartbeat on leader and follower, redirect with and without known leader, heartbeat-reset of MarkedOffline, checkHeartbeats marks stale/no-spam/skips-on-follower, IP-based redirect fallback to LeaderID
+- 9 Python mock-based tests in `worker/tests/test_heartbeat_grpc.py`: register success/redirect/gRPC error, heartbeat success/redirect/gRPC error/unexpected error, worker_addr fallback, explicit worker_addr
+
+**Bugs fixed during S1.4:**
+
+1. **IP-based Raft leader redirect unreachable from isolated worker networks** — `net.ResolveTCPAddr("tcp", cfg.RaftAddr)` in `node.go` resolves the hostname (e.g. `cp-gcp-1:7000`) to an IP at transport-creation time. Because hashicorp/raft includes the transport's `LocalAddr()` in heartbeat messages, followers learn the leader's address as an IP (e.g. `10.10.0.11:7000`) rather than the configured hostname. Workers on isolated Docker networks (e.g. `worker-azure-1` on `net-azure` only) cannot route to IPs on other subnets, so the gRPC redirect timed out with `DEADLINE_EXCEEDED`. Fix: `raftAddrToGRPC()` now detects when the host is an IP via `net.ParseIP()` and falls back to `r.raft.LeaderID()` (the Raft server ID = hostname) which Docker DNS resolves correctly on all networks.
+
+2. **Stale Raft state from previous test runs** — Docker named volumes (`raft-data-aws-1` etc.) persist between `docker compose down` / `up` cycles. A `test-worker` entry left from a prior run was being counted as one of the 4 expected workers, masking `worker-azure-1`'s absence. Fix: `s1_4()` in the verification script now runs `docker compose down --volumes` before bringing the cluster up, ensuring a clean Raft log each time.
+
+**Verification:** `bash scripts/sprint1_verification.sh s1.4` — all 6 acceptance criteria green: 4/4 workers online, all 4 named workers present in cluster-state, worker-aws-1 marked offline within 25s of container stop, worker-aws-1 auto-reregisters after restart.
+
 ## Key Commands
 ```bash
 # Environment
@@ -356,16 +403,14 @@ curl http://localhost:9001          # MinIO console
 ```
 
 ## Immediate Next Steps
-- S1.1, S1.2, S1.3 complete — next is **S1.4** on a new branch
-1. `git checkout -b feature/s1.4-worker-registration`
-2. Define `proto/worker.proto` — `RegisterWorker` and `Heartbeat` RPCs
-3. Run `bash scripts/proto-gen.sh` to generate Go + Python stubs
-4. Implement `WorkerService` gRPC server in `internal/agent/` using `fsm.Apply(CmdRegisterWorker, ...)` on the leader
-5. Update Python `worker/heartbeat.py` stub → real gRPC `Heartbeat` call
-6. Add leader-redirect logic: followers return `raft.Leader()` address so clients can retry
-7. Mark workers offline after 3 missed heartbeats (background goroutine checking `LastSeen`)
-8. `go test ./... && go build ./...` green
-9. `bash scripts/sprint1_verification.sh s1.4`
+**Sprint 1 is complete.** All S1.1–S1.4 deliverables verified green. Merge the `feature/s1.4-worker-registration` PR to `main`, then start **Sprint 2**.
+
+Sprint 2 will likely need:
+1. `git checkout main && git pull && git checkout -b feature/s2.x-<name>`
+2. Task scheduling — define `proto/task.proto`; implement a scheduler in `internal/scheduler/` that assigns tasks to registered workers via the `PipelineFSM`
+3. Worker task execution — Python workers receive tasks via gRPC, run them, report results
+4. Storage integration — workers read/write task artifacts to MinIO (`pipeline-data` bucket)
+5. End-to-end smoke test: submit a task through the control plane, verify it executes on a worker and the result lands in MinIO
 
 
 ## Ports Quick Reference

@@ -20,6 +20,8 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 
+	"github.com/joelcrouch/pipeline-orchestrator/control-plane/internal/agent"
+	workerpb "github.com/joelcrouch/pipeline-orchestrator/control-plane/internal/gen/worker"
 	"github.com/joelcrouch/pipeline-orchestrator/control-plane/internal/metrics"
 	internalraft "github.com/joelcrouch/pipeline-orchestrator/control-plane/internal/raft"
 )
@@ -63,6 +65,15 @@ func main() {
 	}
 	slog.Info("raft node started", "state", raftNode.State().String())
 
+	// ── Agent registry (worker registration + heartbeat) ─────────
+	_, grpcPort, err := net.SplitHostPort(grpcAddr)
+	if err != nil {
+		grpcPort = "50051"
+	}
+	registry := agent.NewAgentRegistry(raftNode, grpcPort)
+	registryCtx, registryCancel := context.WithCancel(context.Background())
+	registry.Start(registryCtx)
+
 	// ── Prometheus stats polling (every 5s) ──────────────────────
 	statsCtx, statsCancel := context.WithCancel(context.Background())
 	go func() {
@@ -99,6 +110,7 @@ func main() {
 	healthSvc := health.NewServer()
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthSvc)
 	healthSvc.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+	workerpb.RegisterWorkerServiceServer(grpcServer, registry)
 	reflection.Register(grpcServer)
 
 	// ── HTTP debug server ────────────────────────────────────────
@@ -128,8 +140,8 @@ func main() {
 			list = append(list, info)
 		}
 		resp := struct {
-			NodeID  string                   `json:"node_id"`
-			State   string                   `json:"state"`
+			NodeID  string                     `json:"node_id"`
+			State   string                     `json:"state"`
 			Workers []*internalraft.WorkerInfo `json:"workers"`
 		}{
 			NodeID:  nodeID,
@@ -163,6 +175,7 @@ func main() {
 	<-quit
 
 	slog.Info("shutting down...")
+	registryCancel()
 	statsCancel()
 	grpcServer.GracefulStop()
 

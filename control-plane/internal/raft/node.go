@@ -161,6 +161,14 @@ func (n *RaftNode) Leader() string {
 	return string(n.raft.Leader())
 }
 
+// LeaderID returns the server ID (node name) of the current Raft leader, or
+// empty string if the leader is unknown. The server ID equals the hostname set
+// via NODE_ID (e.g. "cp-gcp-1"), which is DNS-resolvable inside Docker networks.
+func (n *RaftNode) LeaderID() string {
+	_, id := n.raft.LeaderWithID()
+	return string(id)
+}
+
 // Raft returns the underlying hashicorp/raft instance.
 func (n *RaftNode) Raft() *hashiraft.Raft {
 	return n.raft

@@ -202,6 +202,7 @@ services:
       - WORKER_CLOUD_TAG=aws
       - ORCHESTRATOR_ADDR=cp-aws-1:50051
       - HTTP_PORT=8081
+      - WORKER_ADDR=worker-aws-1:8081
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
       interval: 10s
@@ -227,6 +228,7 @@ services:
       - WORKER_CLOUD_TAG=aws
       - ORCHESTRATOR_ADDR=cp-aws-1:50051
       - HTTP_PORT=8081
+      - WORKER_ADDR=worker-aws-2:8081
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
       interval: 10s
@@ -252,6 +254,7 @@ services:
       - WORKER_CLOUD_TAG=gcp
       - ORCHESTRATOR_ADDR=cp-gcp-1:50051
       - HTTP_PORT=8081
+      - WORKER_ADDR=worker-gcp-1:8081
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
       interval: 10s
@@ -277,6 +280,7 @@ services:
       - WORKER_CLOUD_TAG=azure
       - ORCHESTRATOR_ADDR=cp-azure-1:50051
       - HTTP_PORT=8081
+      - WORKER_ADDR=worker-azure-1:8081
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
       interval: 10s
