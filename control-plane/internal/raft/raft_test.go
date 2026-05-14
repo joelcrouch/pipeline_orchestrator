@@ -65,7 +65,7 @@ func makeCluster(t *testing.T, n int) ([]*RaftNode, []*PipelineFSM, []*hashiraft
 	for i := 0; i < n; i++ {
 		fsms[i] = NewPipelineFSM()
 		var err error
-		nodes[i], err = newRaftNodeWithTransport(Config{
+		nodes[i], err = NewRaftNodeWithTransport(Config{
 			NodeID:    peers[i],
 			DataDir:   t.TempDir(),
 			Bootstrap: true,
@@ -94,9 +94,9 @@ func TestNodeInit(t *testing.T) {
 		Bootstrap: true,
 	}
 	_, transport := hashiraft.NewInmemTransport(hashiraft.ServerAddress("test-node-1"))
-	node, err := newRaftNodeWithTransport(cfg, NewPipelineFSM(), transport, hclog.NewNullLogger())
+	node, err := NewRaftNodeWithTransport(cfg, NewPipelineFSM(), transport, hclog.NewNullLogger())
 	if err != nil {
-		t.Fatalf("newRaftNodeWithTransport: %v", err)
+		t.Fatalf("NewRaftNodeWithTransport: %v", err)
 	}
 	defer func() {
 		if err := node.Shutdown(); err != nil {

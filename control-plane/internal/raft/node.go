@@ -47,11 +47,11 @@ func NewRaftNode(cfg Config, fsm hashiraft.FSM) (*RaftNode, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tcp transport: %w", err)
 	}
-	return newRaftNodeWithTransport(cfg, fsm, transport, logger)
+	return NewRaftNodeWithTransport(cfg, fsm, transport, logger)
 }
 
-// newRaftNodeWithTransport is the internal constructor — used by NewRaftNode and tests.
-func newRaftNodeWithTransport(cfg Config, fsm hashiraft.FSM, transport hashiraft.Transport,
+// NewRaftNodeWithTransport is the internal constructor — used by NewRaftNode and tests.
+func NewRaftNodeWithTransport(cfg Config, fsm hashiraft.FSM, transport hashiraft.Transport,
 	logger hclog.Logger) (*RaftNode, error) {
 
 	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
