@@ -22,8 +22,10 @@ import (
 
 	"github.com/joelcrouch/pipeline-orchestrator/control-plane/internal/agent"
 	workerpb "github.com/joelcrouch/pipeline-orchestrator/control-plane/internal/gen/worker"
+	taskpb "github.com/joelcrouch/pipeline-orchestrator/control-plane/internal/gen/task"
 	"github.com/joelcrouch/pipeline-orchestrator/control-plane/internal/metrics"
 	internalraft "github.com/joelcrouch/pipeline-orchestrator/control-plane/internal/raft"
+	"github.com/joelcrouch/pipeline-orchestrator/control-plane/internal/scheduler"
 )
 
 func main() {
@@ -74,6 +76,9 @@ func main() {
 	registryCtx, registryCancel := context.WithCancel(context.Background())
 	registry.Start(registryCtx)
 
+	// ── Job scheduler ────────────────────────────────────────────
+	jobScheduler := scheduler.NewJobScheduler(raftNode, fsm, grpcPort)
+
 	// ── Prometheus stats polling (every 5s) ──────────────────────
 	statsCtx, statsCancel := context.WithCancel(context.Background())
 	go func() {
@@ -111,6 +116,7 @@ func main() {
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthSvc)
 	healthSvc.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 	workerpb.RegisterWorkerServiceServer(grpcServer, registry)
+	taskpb.RegisterTaskServiceServer(grpcServer, jobScheduler)
 	reflection.Register(grpcServer)
 
 	// ── HTTP debug server ────────────────────────────────────────
@@ -150,6 +156,27 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	mux.HandleFunc("/jobs", func(w http.ResponseWriter, r *http.Request) {
+		jobs := fsm.Jobs()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(jobs)
+	})
+
+	mux.HandleFunc("/jobs/", func(w http.ResponseWriter, r *http.Request) {
+		jobID := strings.TrimPrefix(r.URL.Path, "/jobs/")
+		if jobID == "" {
+			http.Error(w, "missing job_id", http.StatusBadRequest)
+			return
+		}
+		job := fsm.GetJob(jobID)
+		if job == nil {
+			http.Error(w, "job not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(job)
 	})
 
 	mux.Handle("/metrics", promhttp.Handler())

@@ -31,11 +31,21 @@ case $COMMAND in
     echo "▶ Intra-cloud (AWS→AWS): expect <1ms"
     docker exec gateway ping -c 4 10.10.0.1
     echo ""
+    echo "▶ Intra-cloud (GCP→GCP): expect <1ms"
+    docker exec gateway ping -I $GCP_IFACE -c 4 10.20.0.1
+    echo ""
+    echo "▶ Intra-cloud (Azure→Azure): expect <1ms"
+    docker exec gateway ping -I $AZURE_IFACE -c 4 10.30.0.1
+    echo ""
     echo "▶ Cross-cloud (AWS→GCP): expect ~50ms"
     docker exec gateway ping -c 4 10.20.0.1
     echo ""
     echo "▶ Cross-cloud (AWS→Azure): expect ~75ms"
     docker exec gateway ping -c 4 10.30.0.1
+    echo ""
+    echo "▶ Cross-cloud (GCP→Azure): expect ~125ms (50ms + 75ms)"
+    # Ping Azure IP from GCP interface to force routing through the gateway's internal logic
+    docker exec gateway ping -I $GCP_IFACE -c 4 10.30.0.1
     ;;
 
   set)
