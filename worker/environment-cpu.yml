@@ -1,0 +1,23 @@
+name: pipeline-worker-cpu
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pytorch::pytorch=2.3
+  - pytorch::torchvision
+  - cpuonly
+  - numpy=1.26
+  - pandas
+  - scipy
+  - grpcio
+  - grpcio-tools
+  - fastapi
+  - uvicorn
+  - boto3
+  - pytest
+  - ruff
+  - pip
+  - pip:
+    - protobuf
+    - grpcio-status
+    - prometheus-client

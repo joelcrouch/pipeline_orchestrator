@@ -1,0 +1,89 @@
+syntax = "proto3";
+
+package task;
+
+option go_package = "github.com/joelcrouch/pipeline-orchestrator/control-plane/internal/gen/task;taskpb";
+
+message MapTask {
+  string job_id     = 1;
+  string task_id    = 2;  // "map_{i}_{j}_{k}"
+  int32  i          = 3;  // A row-block index
+  int32  j          = 4;  // A col-block / B row-block index
+  int32  k          = 5;  // B col-block index
+  string a_uri      = 6;  // "s3://pipeline-data/jobs/{job_id}/blocks/A_{i}_{j}.npy"
+  string b_uri      = 7;  // "s3://pipeline-data/jobs/{job_id}/blocks/B_{j}_{k}.npy"
+  string output_uri = 8;  // "s3://pipeline-data/jobs/{job_id}/partial/C_{i}_{k}_{j}.npy"
+  int32  block_size = 9;
+  map<string, string> metadata = 10;
+}
+
+message ReduceTask {
+  string   job_id      = 1;
+  string   task_id     = 2;  // "reduce_{i}_{k}"
+  int32    i           = 3;
+  int32    k           = 4;
+  repeated string input_uris  = 5;  // all partial C_{i}_{k}_{j} URIs
+  string   output_uri  = 6;  // "s3://pipeline-data/jobs/{job_id}/result/C_{i}_{k}.npy"
+  map<string, string> metadata = 7;
+}
+
+message JobRequest {
+  string job_id     = 1;
+  int32  m          = 2;  // rows of A
+  int32  k_dim      = 3;  // cols of A / rows of B
+  int32  n          = 4;  // cols of B
+  int32  block_size = 5;
+  string model_type = 6; // "matmul" (default), "recommender", "timeseries_cnn", "llm_vision"
+}
+
+message JobResponse  {
+  bool ok = 1;
+  string error = 2;
+  string leader_addr = 3;
+}
+
+message PollTaskRequest  {
+  string worker_id = 1;
+  string task_type = 2; // "map" | "reduce"
+}
+
+message PollTaskResponse {
+  bool       has_task    = 1;
+  MapTask    map_task    = 2;
+  ReduceTask reduce_task = 3;
+  string     leader_addr = 4;
+}
+
+message ReportResultRequest {
+  string job_id      = 1;
+  string task_id     = 2;
+  bool   success     = 3;
+  string error       = 4;
+  int64  duration_ms = 5;
+}
+
+message ReportResultResponse {
+  bool ok = 1;
+  string leader_addr = 2;
+}
+
+message GetJobStatusRequest {
+  string job_id = 1;
+}
+
+message GetJobStatusResponse {
+  string job_id        = 1;
+  string status        = 2;  // "pending" | "mapping" | "reducing" | "done" | "failed"
+  int32  map_total     = 3;
+  int32  map_done      = 4;
+  int32  reduce_total  = 5;
+  int32  reduce_done   = 6;
+  string leader_addr   = 7;
+}
+
+service TaskService {
+  rpc SubmitJob        (JobRequest)           returns (JobResponse);
+  rpc PollTask         (PollTaskRequest)      returns (PollTaskResponse);
+  rpc ReportTaskResult (ReportResultRequest)  returns (ReportResultResponse);
+  rpc GetJobStatus     (GetJobStatusRequest)  returns (GetJobStatusResponse);
+}

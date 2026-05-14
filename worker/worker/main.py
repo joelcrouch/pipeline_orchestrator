@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from worker.heartbeat import HeartbeatClient
+from worker.tasks.client import TaskWorker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,11 +27,13 @@ app = FastAPI(title="Pipeline Worker", version="0.1.0")
 
 heartbeat_client: HeartbeatClient | None = None
 heartbeat_thread: threading.Thread | None = None
+task_worker: TaskWorker | None = None
+task_thread: threading.Thread | None = None
 
 
 @app.on_event("startup")
 async def startup():
-    global heartbeat_client, heartbeat_thread
+    global heartbeat_client, heartbeat_thread, task_worker, task_thread
     logger.info(f"Worker ready — id={WORKER_ID} cloud={CLOUD_TAG}")
 
     if ORCHESTRATOR_ADDR:
@@ -45,14 +48,32 @@ async def startup():
         )
         heartbeat_thread.start()
         logger.info(f"Heartbeat started -> {ORCHESTRATOR_ADDR}")
+        
+        task_worker = TaskWorker(
+            worker_id=WORKER_ID,
+            orchestrator_addr=ORCHESTRATOR_ADDR,
+        )
+        task_thread = threading.Thread(
+            target=task_worker.run, daemon=True
+        )
+        task_thread.start()
+        logger.info(f"TaskWorker started -> {ORCHESTRATOR_ADDR}")
     else:
         logger.warning("ORCHESTRATOR_ADDR not set — heartbeat disabled")
+
+
+@app.on_event("startup")
+async def register_at_startup():
+    # This might be redundant if heartbeat already registers, but let's keep it safe
+    pass
 
 
 @app.on_event("shutdown")
 async def shutdown():
     if heartbeat_client:
         heartbeat_client.stop()
+    if task_worker:
+        task_worker.stop()
     logger.info("Worker shutdown complete")
 
 

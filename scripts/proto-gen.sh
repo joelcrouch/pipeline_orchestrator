@@ -26,19 +26,29 @@ for tool in protoc-gen-go protoc-gen-go-grpc; do
 done
 
 # ── Output directories ────────────────────────────────────────────────────────
-GO_OUT="$REPO_ROOT/control-plane/internal/gen/worker"
+WORKER_GO_OUT="$REPO_ROOT/control-plane/internal/gen/worker"
+TASK_GO_OUT="$REPO_ROOT/control-plane/internal/gen/task"
 PY_OUT="$REPO_ROOT/worker/worker/gen"
-PROTO="$REPO_ROOT/proto/worker.proto"
+WORKER_PROTO="$REPO_ROOT/proto/worker.proto"
+TASK_PROTO="$REPO_ROOT/proto/task.proto"
 
-mkdir -p "$GO_OUT" "$PY_OUT"
+mkdir -p "$WORKER_GO_OUT" "$TASK_GO_OUT" "$PY_OUT"
 
-# ── Go stubs ──────────────────────────────────────────────────────────────────
-echo "Generating Go stubs → $GO_OUT"
+# ── Go stubs (Worker) ─────────────────────────────────────────────────────────
+echo "Generating Go stubs (Worker) → $WORKER_GO_OUT"
 protoc \
   --proto_path="$REPO_ROOT/proto" \
-  --go_out="$GO_OUT"      --go_opt=paths=source_relative \
-  --go-grpc_out="$GO_OUT" --go-grpc_opt=paths=source_relative \
-  "$PROTO"
+  --go_out="$WORKER_GO_OUT"      --go_opt=paths=source_relative \
+  --go-grpc_out="$WORKER_GO_OUT" --go-grpc_opt=paths=source_relative \
+  "$WORKER_PROTO"
+
+# ── Go stubs (Task) ───────────────────────────────────────────────────────────
+echo "Generating Go stubs (Task) → $TASK_GO_OUT"
+protoc \
+  --proto_path="$REPO_ROOT/proto" \
+  --go_out="$TASK_GO_OUT"      --go_opt=paths=source_relative \
+  --go-grpc_out="$TASK_GO_OUT" --go-grpc_opt=paths=source_relative \
+  "$TASK_PROTO"
 
 # ── Python stubs ──────────────────────────────────────────────────────────────
 echo "Generating Python stubs → $PY_OUT"
@@ -47,12 +57,12 @@ echo "Generating Python stubs → $PY_OUT"
   --proto_path="$REPO_ROOT/proto" \
   --python_out="$PY_OUT" \
   --grpc_python_out="$PY_OUT" \
-  "$PROTO"
+  "$WORKER_PROTO" "$TASK_PROTO"
 
-# grpc_tools generates a bare `import worker_pb2` which breaks when the file
-# lives inside a package. Fix it to a relative import.
-sed -i 's/^import worker_pb2 as worker__pb2$/from . import worker_pb2 as worker__pb2/' \
-  "$PY_OUT/worker_pb2_grpc.py"
+# grpc_tools generates bare imports which break when the files live inside a package.
+# Fix them to relative imports.
+sed -i 's/^import worker_pb2 as worker__pb2$/from . import worker_pb2 as worker__pb2/' "$PY_OUT/worker_pb2_grpc.py"
+sed -i 's/^import task_pb2 as task__pb2$/from . import task_pb2 as task__pb2/' "$PY_OUT/task_pb2_grpc.py"
 
 # Ensure the gen/ directory is a proper Python package
 touch "$PY_OUT/__init__.py"
