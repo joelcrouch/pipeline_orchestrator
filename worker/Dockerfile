@@ -3,7 +3,7 @@ FROM mambaorg/micromamba:1.5.8
 WORKDIR /app
 
 COPY environment.yml .
-RUN micromamba env create -f environment.yml && micromamba clean -afy
+RUN micromamba env create -y -f environment.yml && micromamba clean -afy
 
 COPY requirements-pip.txt .
 RUN micromamba run -n pipeline-worker pip install -r requirements-pip.txt

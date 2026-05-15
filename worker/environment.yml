@@ -20,6 +20,7 @@ dependencies:
   - uvicorn
   - boto3  # S3/MinIO client
   - pytest
+  - pytest-cov
   - ruff # linter + formatter (replaces flake8/black/isort)
   - pip # always include so pip install below works
   - pip:
