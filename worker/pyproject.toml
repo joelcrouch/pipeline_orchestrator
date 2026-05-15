@@ -2,11 +2,41 @@
 name = "pipeline-worker"
 version = "0.1.0"
 requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "grpcio",
+    "boto3",
+    "torch",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "strict"
 pythonpath = ["."]
+
+[tool.coverage.run]
+branch = true
+omit = [
+    "worker/gen/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
 
 [tool.ruff]
 line-length = 100

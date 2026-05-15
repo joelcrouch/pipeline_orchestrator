@@ -15,6 +15,7 @@ dependencies:
   - uvicorn
   - boto3
   - pytest
+  - pytest-cov
   - ruff
   - pip
   - pip:
